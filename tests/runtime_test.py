@@ -112,7 +112,19 @@ class PatchProbeRuntime(LinuxRuntime):
 def test_apply_patch_is_whitespace_tolerant_only_on_windows():
     patch = "diff --git a/a b/a\\r\\n--- a/a\\r\\n+++ b/a\\r\\n"
 
-    windows_runtime = PatchProbeRuntime("windows")
+    class WindowsPatchProbeRuntime(WindowsRuntime):
+        def __init__(self):
+            self.platform = "windows"
+            self.mnt_host = tempfile.mkdtemp()
+            self.mnt_container = r"C:\\mnt_tmp"
+            self.stopped = False
+            self.commands = []
+
+        def send_command(self, command, timeout=None):
+            self.commands.append(command)
+            return FakePatchResult()
+
+    windows_runtime = WindowsPatchProbeRuntime()
     assert windows_runtime.apply_patch(patch) is True
     assert "--ignore-space-change --ignore-whitespace" in windows_runtime.commands[0]
 
