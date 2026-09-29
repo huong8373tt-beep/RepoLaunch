@@ -124,10 +124,13 @@ try {
         command_name = f"windows-command-{uuid.uuid4().hex}.ps1"
         command_host_path = os.path.join(self.mnt_host, command_name)
         command_guest_path = f"C:\\mnt_tmp\\{command_name}"
-        # Each exec is a fresh PowerShell process, so make the runtime working
-        # directory explicit rather than relying on persistent shell state.
+        # Each exec is a fresh PowerShell process. Restore the last directory
+        # reported by the preceding command so command groups that intentionally
+        # change directory (build -> test -> print) retain persistent-shell
+        # semantics without relying on ConPTY state.
+        working_dir = self.working_dir.replace("'", "''")
         script = (
-            "Set-Location -LiteralPath 'C:\\testbed'\n"
+            f"Set-Location -LiteralPath '{working_dir}'\n"
             + "$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
             + "$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'\n"
             + command
@@ -173,6 +176,8 @@ try {
             metadata = CmdOutputMetadata.from_ps1_match(matches[-1]) if matches else None
             if metadata is not None:
                 output = output[:matches[-1].start()]
+                if metadata.working_dir:
+                    self.working_dir = metadata.working_dir
             else:
                 exit_code = result.exit_code
                 if exit_code is None:
