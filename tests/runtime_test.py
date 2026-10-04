@@ -51,6 +51,8 @@ from launch.core.runtime import SetupRuntime
 from launch.core.platforms.linux import LinuxRuntime
 from launch.core.platforms.windows import WindowsRuntime
 from launch.core.platforms.android import AndroidRuntime
+from launch.core.platforms.linux import _container_mount_path
+from launch.utilities.tools.str_replace_editor import _join_container_path
 #from launch.core.platforms.macos import MacosRuntime
 
 
@@ -168,6 +170,12 @@ def test_runtime_constructor_attributes(runtime_cls, expected_attrs, patch_runti
     finally:
         runtime.stopped = True
 
+
+
+def test_linux_container_mount_paths_use_posix_separators():
+    assert _container_mount_path("/mnt_tmp", "patch.diff") == "/mnt_tmp/patch.diff"
+    assert _join_container_path("/mnt_tmp", "patch.diff", "linux") == "/mnt_tmp/patch.diff"
+    assert _join_container_path("C:\\mnt_tmp", "patch.diff", "windows") == os.path.join("C:\\mnt_tmp", "patch.diff")
 
 
 def supported_integration_platforms() -> set[str]:
