@@ -16,7 +16,9 @@ from launch.core.platforms.base import (
     BaseRuntime
 )
 
-import os, json
+import json
+import os
+import posixpath
 from typing import Any, Optional
 import queue
 import threading
@@ -207,7 +209,7 @@ class LinuxRuntime(BaseRuntime):
         hostpath = os.path.join(self.mnt_host, filename)
         with open(hostpath, "w") as f:
             f.write(patch)
-        containerpath =  os.path.join(self.mnt_container, filename)
+        containerpath = posixpath.join(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """
         res = self.send_command(cmd)
