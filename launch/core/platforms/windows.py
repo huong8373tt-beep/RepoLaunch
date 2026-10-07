@@ -59,48 +59,13 @@ class WindowsRuntime(LinuxRuntime):
         self.working_dir = r"C:\testbed"
         self.mnt_container = r"C:\mnt_tmp"
         self.mnt_host = os.path.join(os.getcwd(), "tmp")
-        self.sock = self.container.attach_socket(
-            params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1}
-        )
-        self.output_queue: queue.Queue[bytes] = queue.Queue()
-        self.capture_token = uuid.uuid4().hex
+        # Windows commands use Docker's non-interactive exec API in
+        # send_command(). The old persistent attach transport could block while
+        # PowerShell transitions from Created to Running, leaving an evaluator
+        # process with a live container but no diagnostic command result. The
+        # prompt bootstrap was only needed by that transport; exec_run writes
+        # equivalent metadata after each command directly.
         self.stopped = False
-        self._start_output_thread()
-        self._clear_initial_prompt()
-        self.send_command(r'''
-function prompt {
-  if ($?) {$ec=0; $LASTEXITCODE=0} else {if ($LASTEXITCODE -ne 0) {$ec=$LASTEXITCODE} else {$ec=1}}
-  $u  = $env:USERNAME
-  $h  = $env:COMPUTERNAME
-  $wd = (Get-Location).Path
-  $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-  $py = if ($pyCmd) {
-    if ($pyCmd.PSObject.Properties.Match('Path').Count -gt 0 -and $pyCmd.Path) { $pyCmd.Path }
-    elseif ($pyCmd.PSObject.Properties.Match('Source').Count -gt 0 -and $pyCmd.Source) { $pyCmd.Source }
-    else { '' }
-  } else { '' }
-  Write-Output ""
-  Write-Output "###PS1JSON###"
-  $obj = [ordered]@{
-    exit_code = $ec
-    username = $u
-    hostname = $h
-    working_dir = $wd
-    py_interpreter_path = $py
-  }
-  $obj | ConvertTo-Json -Compress
-  Write-Output "###PS1END###"
-  "PS $wd> "
-}
-try {
-  $raw = $Host.UI.RawUI
-  $raw.BufferSize = New-Object System.Management.Automation.Host.Size(32767, 3000)
-  $raw.WindowSize = New-Object System.Management.Automation.Host.Size(240, 60)
-} catch {
-  # Some Windows Docker/ConPTY hosts expose a read-only or absent RawUI.
-  # Prompt metadata remains valid without resizing the console buffer.
-}
-''')
         self.preparation_commands = []
 
     def send_command(self, command: str, timeout: int|None = None) -> CommandResult:
