@@ -48,6 +48,32 @@ class WindowsContainerProxyTest(unittest.TestCase):
         self.assertEqual(environment["NO_PROXY"], DEFAULT_WINDOWS_CONTAINER_NO_PROXY)
         self.assertEqual(environment["no_proxy"], DEFAULT_WINDOWS_CONTAINER_NO_PROXY)
 
+    def test_host_proxy_is_used_only_when_explicitly_selected(self) -> None:
+        host_proxy = "http://host.docker.internal:7897"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HTTP_PROXY": host_proxy,
+                "HTTPS_PROXY": host_proxy,
+                "ALL_PROXY": host_proxy,
+            },
+            clear=True,
+        ):
+            environment = build_windows_container_environment()
+
+        self.assertEqual(environment, {"TERM": "xterm-mono"})
+        self.assertNotIn("HTTP_PROXY", environment)
+
+        with mock.patch.dict(
+            os.environ,
+            {WINDOWS_CONTAINER_PROXY_ENV: host_proxy},
+            clear=True,
+        ):
+            environment = build_windows_container_environment()
+
+        self.assertEqual(environment["HTTP_PROXY"], host_proxy)
+        self.assertEqual(environment["HTTPS_PROXY"], host_proxy)
+
     def test_explicit_no_proxy_overrides_default(self) -> None:
         with mock.patch.dict(
             os.environ,

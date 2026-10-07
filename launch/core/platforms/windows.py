@@ -36,9 +36,12 @@ def build_windows_container_environment() -> dict[str, str]:
 
     A Windows evaluation container may be able to reach an external registry
     directly even when a host-local proxy is stale or unreachable from process
-    isolation. Keep proxy propagation opt-in. When a caller explicitly supplies
-    a proxy, set both conventional upper- and lower-case variables because
-    Windows project toolchains use both spellings.
+    isolation. Conversely, managed, regional, and enterprise environments may
+    require a proxy. Keep proxy propagation explicit rather than guessing from
+    host variables: callers can supply a container-reachable route through
+    ``REPOLAUNCH_WINDOWS_CONTAINER_PROXY``. When configured, set both
+    conventional upper- and lower-case variables because Windows project
+    toolchains use both spellings.
     """
     environment = {"TERM": "xterm-mono"}
     proxy = os.environ.get(WINDOWS_CONTAINER_PROXY_ENV, "").strip()
