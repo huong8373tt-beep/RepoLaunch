@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT))
 
 from launch.core.platforms.windows import (
     DEFAULT_WINDOWS_DOCKER_HOST,
+    WINDOWS_DOCKER_PIPE_TARGET,
     WindowsRuntime,
+    build_windows_docker_mounts,
+    get_windows_container_docker_pipe_source,
 )
 
 
@@ -40,6 +43,21 @@ class WindowsDockerHostTests(unittest.TestCase):
                 WindowsRuntime._start_container("image", "instance", 1, 1)
             self.assertEqual(os.environ["DOCKER_HOST"], DEFAULT_WINDOWS_DOCKER_HOST)
             self.assertEqual(fake_docker.pings, 1)
+
+    def test_native_daemon_pipe_is_mounted_at_the_standard_guest_path(self) -> None:
+        with patch.dict(os.environ, {"DOCKER_HOST": DEFAULT_WINDOWS_DOCKER_HOST}, clear=True):
+            self.assertEqual(
+                get_windows_container_docker_pipe_source(),
+                r"\\.\pipe\docker_engine_windows",
+            )
+            mounts = build_windows_docker_mounts()
+            self.assertEqual(len(mounts), 1)
+            self.assertEqual(mounts[0]["Source"], r"\\.\pipe\docker_engine_windows")
+            self.assertEqual(mounts[0]["Target"], WINDOWS_DOCKER_PIPE_TARGET)
+            self.assertEqual(mounts[0]["Type"], "npipe")
+        with patch.dict(os.environ, {"SWE_WINDOWS_CONTAINER_DOCKER_PIPE_SOURCE": ""}, clear=True):
+            self.assertIsNone(get_windows_container_docker_pipe_source())
+            self.assertEqual(build_windows_docker_mounts(), [])
 
     def test_explicit_docker_host_remains_authoritative(self) -> None:
         class FakeDocker:

@@ -17,6 +17,7 @@ from launch.core.platforms.base import (
 from launch.core.platforms.linux import LinuxRuntime
 
 import os
+import re
 from typing import Any
 import queue
 import uuid
@@ -29,6 +30,38 @@ from docker.models.containers import Container
 # than Docker Desktop's dockerDesktopWindowsEngine context pipe. Callers can
 # still override this through DOCKER_HOST for another endpoint.
 DEFAULT_WINDOWS_DOCKER_HOST = "npipe:////./pipe/docker_engine_windows"
+DEFAULT_WINDOWS_DOCKER_PIPE_SOURCE = r"\\.\pipe\docker_engine_windows"
+WINDOWS_DOCKER_PIPE_TARGET = r"\\.\pipe\docker_engine"
+
+
+def get_windows_container_docker_pipe_source() -> str | None:
+    """Map the active native daemon pipe to Docker's conventional guest path.
+
+    Windows task projects can use Docker internally. The host daemon may listen
+    on a nonstandard native pipe, while Docker clients inside the task container
+    conventionally use ``\\\\.\\pipe\\docker_engine``. An explicit empty override
+    disables this mount for environments that do not allow named-pipe sharing.
+    """
+    explicit = os.environ.get("SWE_WINDOWS_CONTAINER_DOCKER_PIPE_SOURCE")
+    if explicit is not None:
+        value = explicit.strip()
+        return value or None
+    host = os.environ.get("DOCKER_HOST", DEFAULT_WINDOWS_DOCKER_HOST).strip()
+    match = re.fullmatch(r"npipe:/{4}\./pipe/(?P<name>[^/?]+)", host, re.IGNORECASE)
+    if not match:
+        return None
+    return "\\\\.\\pipe\\" + match.group("name")
+
+
+def build_windows_docker_mounts() -> list[Any]:
+    source = get_windows_container_docker_pipe_source()
+    if not source:
+        return []
+    return [docker.types.Mount(
+        target=WINDOWS_DOCKER_PIPE_TARGET,
+        source=source,
+        type="npipe",
+    )]
 
 
 class WindowsRuntime(LinuxRuntime):
@@ -157,6 +190,9 @@ function prompt {
         run_kwargs = {
             "cpu_count": CPU_CORES,  # cpu_quota is Linux-only
             "mem_limit": MEM_LIMIT,
+            # Make the host's native daemon visible to task-local Docker clients
+            # at the path those clients conventionally use on Windows.
+            "mounts": build_windows_docker_mounts(),
         }
 
         container = client.containers.run(
