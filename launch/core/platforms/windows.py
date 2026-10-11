@@ -21,6 +21,7 @@ import base64
 import re
 from typing import Any
 import queue
+import threading
 import uuid
 
 
@@ -144,18 +145,52 @@ try {
             fh.write(script)
 
         try:
-            # exec_run is deliberately non-TTY: no ConPTY wrapping, no prompt
-            # state, and no second capture file are involved.
-            result = self.container.exec_run(
-                [
-                    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", command_guest_path,
-                ],
-                workdir=self.working_dir,
-                stdout=True,
-                stderr=True,
-                demux=False,
-            )
+            # Docker SDK exec_run() has no timeout parameter. Run the blocking
+            # request in a daemon worker so this runtime's existing command
+            # deadline remains enforceable. On expiry, destroy the isolated
+            # evaluation container; that is the same cancellation boundary used
+            # by the interactive fallback when Ctrl-C cannot restore a prompt.
+            execution: dict[str, Any] = {}
+            completed = threading.Event()
+
+            def run_exec() -> None:
+                try:
+                    execution["result"] = self.container.exec_run(
+                        [
+                            "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                            "-ExecutionPolicy", "Bypass", "-File", command_guest_path,
+                        ],
+                        workdir=self.working_dir,
+                        stdout=True,
+                        stderr=True,
+                        demux=False,
+                    )
+                except BaseException as exc:
+                    execution["error"] = exc
+                finally:
+                    completed.set()
+
+            worker = threading.Thread(target=run_exec, daemon=True)
+            worker.start()
+            if not completed.wait(timeout_seconds):
+                timeout_output = "\n**Exited due to timeout**\n"
+                try:
+                    self.container.kill()
+                except Exception as exc:
+                    timeout_output += f"Container kill after timeout failed: {exc}\n"
+                try:
+                    self.container.remove(force=True)
+                except Exception as exc:
+                    timeout_output += f"Container removal after timeout failed: {exc}\n"
+                self.stopped = True
+                return CommandResult(
+                    output=timeout_output,
+                    metadata=CmdOutputMetadata(exit_code=TIMEOUT_EXIT_CODE),
+                )
+
+            if "error" in execution:
+                raise execution["error"]
+            result = execution["result"]
             raw_output = result.output
             if isinstance(raw_output, tuple):
                 raw_output = (raw_output[0] or b"") + (raw_output[1] or b"")
