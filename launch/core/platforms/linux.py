@@ -225,8 +225,12 @@ class LinuxRuntime(BaseRuntime):
 
         filename = f"{uuid.uuid4()}.diff"
         hostpath = os.path.join(self.mnt_host, filename)
-        with open(hostpath, "w") as f:
-            f.write(patch)
+        # Patch text may originate from a Windows-hosted model output.  Keep
+        # the mounted file byte-for-byte LF/UTF-8 so Linux git apply does not
+        # treat every context line as CRLF text inside the evaluation container.
+        normalized_patch = patch.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+        with open(hostpath, "w", encoding="utf-8", newline="\n") as f:
+            f.write(normalized_patch)
         containerpath = _container_mount_path(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """

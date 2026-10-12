@@ -41,6 +41,7 @@ index 0000000..7a754f4
 
 import os
 import platform as host_platform
+from pathlib import Path
 from types import SimpleNamespace
 import warnings
 
@@ -181,6 +182,7 @@ def test_linux_container_mount_paths_use_posix_separators():
 
 def test_linux_runtime_applies_patch_using_posix_container_path(monkeypatch, tmp_path):
     runtime = LinuxRuntime.__new__(LinuxRuntime)
+    runtime.stopped = True
     runtime.mnt_host = str(tmp_path)
     runtime.mnt_container = "/mnt_tmp"
     commands = []
@@ -195,6 +197,26 @@ def test_linux_runtime_applies_patch_using_posix_container_path(monkeypatch, tmp
     assert "/mnt_tmp/" in commands[0]
     assert "\\" not in commands[0]
     assert commands[1].startswith("rm /mnt_tmp/")
+
+
+def test_linux_runtime_writes_utf8_lf_patch_without_bom(monkeypatch, tmp_path):
+    runtime = LinuxRuntime.__new__(LinuxRuntime)
+    runtime.stopped = True
+    runtime.mnt_host = str(tmp_path)
+    runtime.mnt_container = "/mnt_tmp"
+
+    def send_command(command, timeout=None):
+        return SimpleNamespace(metadata=SimpleNamespace(exit_code=0), output="")
+
+    monkeypatch.setattr(runtime, "send_command", send_command)
+    patch = "\ufeffdiff --git a/a b/a\r\n--- a/a\r\n+++ b/a\r\n"
+    assert runtime.apply_patch(patch) is True
+
+    patch_files = list(Path(tmp_path).glob("*.diff"))
+    assert len(patch_files) == 1
+    assert patch_files[0].read_bytes() == (
+        b"diff --git a/a b/a\n--- a/a\n+++ b/a\n"
+    )
 
 
 def supported_integration_platforms() -> set[str]:
