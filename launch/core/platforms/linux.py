@@ -213,8 +213,11 @@ class LinuxRuntime(BaseRuntime):
 
         filename = f"{uuid.uuid4()}.diff"
         hostpath = os.path.join(self.mnt_host, filename)
-        with open(hostpath, "w") as f:
-            f.write(patch)
+        # The file is bind-mounted into a Linux container.  Preserve the patch
+        # byte-for-byte: Windows text mode otherwise translates LF to CRLF,
+        # which makes Git fail to match LF source context inside the container.
+        with open(hostpath, "wb") as f:
+            f.write(patch.encode("utf-8"))
         containerpath = _container_mount_path(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """
