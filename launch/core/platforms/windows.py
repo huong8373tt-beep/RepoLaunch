@@ -17,12 +17,19 @@ from launch.core.platforms.base import (
 from launch.core.platforms.linux import LinuxRuntime
 
 import os
+import time
 from typing import Any
 import queue
+import threading
 import uuid
 
 import docker
 from docker.models.containers import Container
+
+
+# Bound recovery after Docker externally destroys a Windows task container
+# without changing normal command-timeout semantics.
+WINDOWS_EXEC_LIVENESS_POLL_SECONDS = 5.0
 
 
 class WindowsRuntime(LinuxRuntime):
@@ -80,6 +87,41 @@ function prompt {
 ''')
         self.preparation_commands = []
 
+    def _container_liveness_diagnostic(self) -> str | None:
+        """Return a bounded diagnostic only for a Docker-confirmed lost container."""
+        try:
+            self.container.reload()
+            state = getattr(self.container, "attrs", {}).get("State", {}) or {}
+            if bool(state.get("Running")):
+                return None
+            status = str(state.get("Status") or "unknown")
+            exit_code = state.get("ExitCode")
+            suffix = f" exit_code={exit_code}" if exit_code is not None else ""
+            return f"Windows task container is no longer running (status={status}{suffix})."
+        except docker.errors.NotFound:
+            return "Windows task container no longer exists in Docker."
+        except docker.errors.APIError:
+            return None
+        except Exception:
+            return None
+
+    def _container_liveness_result(self, diagnostic: str) -> CommandResult:
+        """Return a non-timeout sentinel for a Docker-confirmed lost container."""
+        self.stopped = True
+        return CommandResult(
+            output=(
+                "\n**Windows container execution became unavailable before Docker "
+                f"returned a command result: {diagnostic}**\n"
+            ),
+            metadata=CmdOutputMetadata(
+                exit_code=125,
+                username=None,
+                hostname=None,
+                working_dir=self.working_dir,
+                py_interpreter_path=None,
+            ),
+        )
+
     def send_command(self, command: str, timeout: int|None = None) -> CommandResult:
         """Execute a command through Docker's non-interactive exec API.
 
@@ -121,18 +163,78 @@ function prompt {
             fh.write(script)
 
         try:
-            # exec_run is deliberately non-TTY: no ConPTY wrapping, no prompt
-            # state, and no second capture file are involved.
-            result = self.container.exec_run(
-                [
-                    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", command_guest_path,
-                ],
-                workdir=self.working_dir,
-                stdout=True,
-                stderr=True,
-                demux=False,
+            # Docker SDK exec_run() has no timeout parameter. Run the blocking
+            # request in a daemon worker so this runtime's existing command
+            # deadline remains enforceable. On expiry, destroy the isolated
+            # evaluation container; that is the same cancellation boundary used
+            # by the interactive fallback when Ctrl-C cannot restore a prompt.
+            execution: dict[str, Any] = {}
+            completed = threading.Event()
+
+            def run_exec() -> None:
+                try:
+                    execution["result"] = self.container.exec_run(
+                        [
+                            "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                            "-ExecutionPolicy", "Bypass", "-File", command_guest_path,
+                        ],
+                        workdir=self.working_dir,
+                        stdout=True,
+                        stderr=True,
+                        demux=False,
+                    )
+                except BaseException as exc:
+                    execution["error"] = exc
+                finally:
+                    completed.set()
+
+            worker = threading.Thread(
+                target=run_exec,
+                name="windows-runtime-exec",
+                daemon=True,
             )
+            worker.start()
+            worker_detached = False
+            deadline = time.monotonic() + timeout_seconds
+            while not completed.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                completed.wait(timeout=min(remaining, WINDOWS_EXEC_LIVENESS_POLL_SECONDS))
+                if completed.is_set():
+                    break
+                diagnostic = self._container_liveness_diagnostic()
+                if diagnostic is not None:
+                    worker_detached = True
+                    return self._container_liveness_result(diagnostic)
+
+            if not completed.is_set():
+                timeout_output = "\n**Exited due to timeout**\n"
+                try:
+                    self.container.kill()
+                except Exception as exc:
+                    timeout_output += f"Container kill after timeout failed: {exc}\n"
+                try:
+                    self.container.remove(force=True)
+                except Exception as exc:
+                    timeout_output += f"Container removal after timeout failed: {exc}\n"
+                self.stopped = True
+                # Keep the established timeout contract: the container was
+                # deliberately killed/removed, so its mounted command file may
+                # be removed immediately. Deferred cleanup is only for a
+                # container already lost externally while exec_run unwinds.
+                worker_detached = False
+                return CommandResult(
+                    output=timeout_output,
+                    metadata=CmdOutputMetadata(exit_code=TIMEOUT_EXIT_CODE),
+                )
+
+            if "error" in execution:
+                diagnostic = self._container_liveness_diagnostic()
+                if diagnostic is not None:
+                    return self._container_liveness_result(diagnostic)
+                raise execution["error"]
+            result = execution["result"]
             raw_output = result.output
             if isinstance(raw_output, tuple):
                 raw_output = (raw_output[0] or b"") + (raw_output[1] or b"")
@@ -163,10 +265,26 @@ function prompt {
                 )
             return CommandResult(output=output, metadata=metadata)
         finally:
-            try:
-                os.remove(command_host_path)
-            except OSError:
-                pass
+            # A blocked Docker SDK worker can outlive this method after loss or
+            # deadline recovery. Keep its mounted script until it unwinds.
+            if "worker_detached" in locals() and worker_detached:
+                def _remove_when_exec_finishes() -> None:
+                    completed.wait()
+                    try:
+                        os.remove(command_host_path)
+                    except OSError:
+                        pass
+
+                threading.Thread(
+                    target=_remove_when_exec_finishes,
+                    name="windows-runtime-script-cleanup",
+                    daemon=True,
+                ).start()
+            else:
+                try:
+                    os.remove(command_host_path)
+                except OSError:
+                    pass
 
     def apply_patch(self, patch: str, verbose: bool = False) -> bool:
         """Apply a unified diff using a native Windows container path."""
@@ -184,6 +302,11 @@ function prompt {
             res = self.send_command(
                 f"git apply --reject --whitespace=nowarn '{guestpath}'"
             )
+            if (
+                int(res.metadata.exit_code) == 125
+                and "Windows container execution became unavailable before Docker returned a command result:" in (res.output or "")
+            ):
+                raise RuntimeError(res.output.strip())
             ok = int(res.metadata.exit_code) == 0
             if ok:
                 if verbose:
