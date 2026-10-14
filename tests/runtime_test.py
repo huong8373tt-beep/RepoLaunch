@@ -198,7 +198,7 @@ def test_linux_runtime_applies_patch_using_posix_container_path(monkeypatch, tmp
     runtime.stopped = True
 
 
-def test_linux_runtime_preserves_patch_lf_bytes(monkeypatch, tmp_path):
+def test_linux_runtime_writes_utf8_lf_patch_without_bom(monkeypatch, tmp_path):
     runtime = LinuxRuntime.__new__(LinuxRuntime)
     runtime.mnt_host = str(tmp_path)
     runtime.mnt_container = "/mnt_tmp"
@@ -210,10 +210,11 @@ def test_linux_runtime_preserves_patch_lf_bytes(monkeypatch, tmp_path):
         payload = (tmp_path / mounted_filename).read_bytes()
         assert payload == b"diff --git a/a b/a\n+line\n"
         assert b"\r\n" not in payload
+        assert not payload.startswith(b"\xef\xbb\xbf")
         return SimpleNamespace(metadata=SimpleNamespace(exit_code=0), output="")
 
     monkeypatch.setattr(runtime, "send_command", send_command)
-    assert runtime.apply_patch("diff --git a/a b/a\n+line\n") is True
+    assert runtime.apply_patch("\ufeffdiff --git a/a b/a\r\n+line\r\n") is True
     runtime.stopped = True
 
 

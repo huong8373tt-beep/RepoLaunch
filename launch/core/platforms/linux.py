@@ -213,11 +213,12 @@ class LinuxRuntime(BaseRuntime):
 
         filename = f"{uuid.uuid4()}.diff"
         hostpath = os.path.join(self.mnt_host, filename)
-        # The file is bind-mounted into a Linux container.  Preserve the patch
-        # byte-for-byte: Windows text mode otherwise translates LF to CRLF,
-        # which makes Git fail to match LF source context inside the container.
-        with open(hostpath, "wb") as f:
-            f.write(patch.encode("utf-8"))
+        # The file is bind-mounted into a Linux container. Normalize model
+        # output to UTF-8, no BOM, and LF-only newlines so git apply sees
+        # stable patch context bytes regardless of the Windows host.
+        normalized_patch = patch.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+        with open(hostpath, "w", encoding="utf-8", newline="\n") as f:
+            f.write(normalized_patch)
         containerpath = _container_mount_path(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """
