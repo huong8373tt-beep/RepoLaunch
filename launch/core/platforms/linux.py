@@ -21,6 +21,7 @@ import os
 import posixpath
 from typing import Any, Optional
 import queue
+import shlex
 import threading
 import time
 import uuid
@@ -293,9 +294,7 @@ class LinuxRuntime(BaseRuntime):
             stdin_open=True,
             tty=True,
             detach=True,
-            environment={
-                "TERM": "xterm-mono",
-            },
+            environment={"TERM": "xterm-mono"},
             working_dir=working_dir,
             extra_hosts=extra_hosts,
             volumes={
@@ -311,6 +310,23 @@ class LinuxRuntime(BaseRuntime):
                     container, 
                     command_timeout=command_timeout,
                 )
+
+        # The task image is intentionally immutable.  When the evaluator has an
+        # explicit snapshot clock, provision faketime before exporting it in this
+        # persistent shell so deterministic certificate/timestamp tests use that
+        # clock without changing normal tasks.
+        evaluation_clock = os.environ.get("SWE_BENCH_LIVE_EVALUATION_CLOCK", "").strip()
+        if evaluation_clock:
+            faketime_library = "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"
+            setup_clock = (
+                f"if [ ! -f {shlex.quote(faketime_library)} ]; then "
+                "DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libfaketime || exit $?; "
+                "fi; "
+                f"export FAKETIME={shlex.quote(evaluation_clock)}; "
+                f"export LD_PRELOAD={shlex.quote(faketime_library)}"
+            )
+            session.send_command(setup_clock)
 
         return session
 
