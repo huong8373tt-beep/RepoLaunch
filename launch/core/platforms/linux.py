@@ -311,10 +311,13 @@ class LinuxRuntime(BaseRuntime):
                     command_timeout=command_timeout,
                 )
 
-        # The task image is intentionally immutable.  When the evaluator has an
-        # explicit snapshot clock, provision faketime before exporting it in this
-        # persistent shell so deterministic certificate/timestamp tests use that
-        # clock without changing normal tasks.
+        # The task image is intentionally immutable. When the evaluator has an
+        # explicit snapshot clock, provision faketime before exporting it in the
+        # persistent shell so certificate/timestamp checks use that clock without
+        # changing normal tasks.  Export faketime only for test commands: keeping
+        # git, patch application, and rebuild tools on real filesystem timestamps
+        # prevents a snapshot-clock run from making generated binaries appear older
+        # than their patched sources and accidentally reusing a stale build.
         evaluation_clock = os.environ.get("SWE_BENCH_LIVE_EVALUATION_CLOCK", "").strip()
         if evaluation_clock:
             faketime_library = "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"
@@ -323,10 +326,13 @@ class LinuxRuntime(BaseRuntime):
                 "DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
                 "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libfaketime || exit $?; "
                 "fi; "
-                f"export FAKETIME={shlex.quote('@' + evaluation_clock)}; "
-                "export FAKETIME_DONT_RESET=1; "
-                "export FAKETIME_DONT_FAKE_MONOTONIC=1; "
-                f"export LD_PRELOAD={shlex.quote(faketime_library)}"
+                f"export SWE_BENCH_LIVE_FAKETIME_LIBRARY={shlex.quote(faketime_library)}; "
+                f"export SWE_BENCH_LIVE_FAKETIME_VALUE={shlex.quote('@' + evaluation_clock)}; "
+                "swe_bench_live_with_clock() { "
+                "FAKETIME=$SWE_BENCH_LIVE_FAKETIME_VALUE "
+                "FAKETIME_DONT_RESET=1 FAKETIME_DONT_FAKE_MONOTONIC=1 "
+                "LD_PRELOAD=$SWE_BENCH_LIVE_FAKETIME_LIBRARY \"$@\"; "
+                "}"
             )
             session.send_command(setup_clock)
 
