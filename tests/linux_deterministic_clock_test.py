@@ -53,6 +53,7 @@ class LinuxDeterministicClockContractTests(unittest.TestCase):
         command = clock_commands[0]
         self.assertIn("apt-get install -y -qq libfaketime", command)
         self.assertIn("export FAKETIME='2026-04-10 12:00:00'", command)
+        self.assertIn("export FAKETIME_DONT_FAKE_MONOTONIC=1", command)
         self.assertIn("export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1", command)
 
     def test_no_clock_preserves_default_environment_and_skips_setup(self):

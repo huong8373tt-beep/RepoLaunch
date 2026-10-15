@@ -324,6 +324,7 @@ class LinuxRuntime(BaseRuntime):
                 "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libfaketime || exit $?; "
                 "fi; "
                 f"export FAKETIME={shlex.quote(evaluation_clock)}; "
+                "export FAKETIME_DONT_FAKE_MONOTONIC=1; "
                 f"export LD_PRELOAD={shlex.quote(faketime_library)}"
             )
             session.send_command(setup_clock)
