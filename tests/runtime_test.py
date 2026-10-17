@@ -41,6 +41,7 @@ index 0000000..7a754f4
 
 import os
 import platform as host_platform
+import queue
 from types import SimpleNamespace
 import warnings
 
@@ -49,6 +50,7 @@ import pytest
 from docker.errors import APIError, DockerException, ImageNotFound
 
 from launch.core.runtime import SetupRuntime
+from launch.core.platforms.base import CmdOutputMetadata
 from launch.core.platforms.linux import LinuxRuntime
 from launch.core.platforms.windows import WindowsRuntime
 from launch.core.platforms.android import AndroidRuntime
@@ -216,6 +218,37 @@ def test_linux_runtime_writes_utf8_lf_patch_without_bom(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "send_command", send_command)
     assert runtime.apply_patch("\ufeffdiff --git a/a b/a\r\n+line\r\n") is True
     runtime.stopped = True
+
+
+def test_linux_runtime_detects_prompt_without_rescanning_large_output(monkeypatch):
+    runtime = LinuxRuntime.__new__(LinuxRuntime)
+    runtime.stopped = True
+    runtime.output_queue = queue.Queue()
+    command_output = ("pytest output line\n" * 20_000)
+    prompt = "\n###PS1JSON###\n{\"exit_code\": 0}\n###PS1END###\n"
+    for offset in range(0, len(command_output), 257):
+        runtime.output_queue.put(command_output[offset : offset + 257].encode())
+    for offset in range(0, len(prompt), 7):
+        runtime.output_queue.put(prompt[offset : offset + 7].encode())
+
+    original = CmdOutputMetadata.matches_ps1_metadata.__func__
+    calls = []
+
+    def record_matches(cls, output):
+        calls.append(len(output))
+        return original(cls, output)
+
+    monkeypatch.setattr(CmdOutputMetadata, "matches_ps1_metadata", classmethod(record_matches))
+    output, metadata = runtime._read_raw_output(timeout=1)
+
+    assert metadata is not None
+    assert metadata.exit_code == 0
+    assert output == command_output
+    # One bounded prompt parse and one final full-output parse; the old loop
+    # performed a growing full-log regex scan after every queue chunk.
+    assert len(calls) == 2
+    assert calls[0] < len(prompt) + 16
+    assert calls[1] == len(command_output) + len(prompt)
 
 
 def supported_integration_platforms() -> set[str]:

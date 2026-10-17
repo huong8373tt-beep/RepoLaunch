@@ -103,22 +103,61 @@ class LinuxRuntime(BaseRuntime):
         '''
         timeout: in seconds
         '''
-        
-        accumulated_output = ""
+
+        # Keep all output for the command result, but do not run the full prompt
+        # regex against that growing buffer after every socket chunk.  Large test
+        # logs arrive in many small chunks; rescanning the whole log per chunk is
+        # quadratic and can leave the evaluator apparently hung after a command
+        # has already completed.
+        output_chunks: list[str] = []
+        prompt_start = CMD_OUTPUT_PS1_BEGIN.strip()
+        prompt_end = CMD_OUTPUT_PS1_END.strip()
+        marker_tail = ""
+        prompt_candidate: str | None = None
         start_time = time.time()
 
         while time.time() - start_time < timeout:
             try:
                 chunk = self.output_queue.get(timeout=0.1)
-                accumulated_output += chunk.decode("utf-8", errors="ignore")
-                # PSReadLine injects ANSI + cursor control; normalize before matching
-                accumulated_clean = ANSI_ESCAPE.sub("", accumulated_output).replace("\r", "")
-                ps1_matches = CmdOutputMetadata.matches_ps1_metadata(accumulated_clean)
-                if ps1_matches:
+                decoded_chunk = chunk.decode("utf-8", errors="ignore")
+                output_chunks.append(decoded_chunk)
+                # Prompt markers are plain text.  Normalize only the bounded
+                # detection buffer while streaming, then normalize the complete
+                # output once below before extracting the final command output.
+                clean_chunk = ANSI_ESCAPE.sub("", decoded_chunk).replace("\r", "")
+
+                if prompt_candidate is None:
+                    probe = marker_tail + clean_chunk
+                    start = probe.rfind(prompt_start)
+                    if start < 0:
+                        marker_tail = probe[-(len(prompt_start) - 1):]
+                        continue
+                    prompt_candidate = probe[start:]
+                    marker_tail = ""
+                else:
+                    prompt_candidate += clean_chunk
+
+                if prompt_end not in prompt_candidate:
+                    continue
+
+                # Parse only the small prompt candidate while streaming.  The
+                # complete output is parsed once after the loop so callers keep
+                # the existing output/metadata semantics.
+                if CmdOutputMetadata.matches_ps1_metadata(prompt_candidate):
                     break
+
+                # Command output can contain marker-like text.  Discard an
+                # invalid completed candidate and resume bounded marker search.
+                next_start = prompt_candidate.rfind(prompt_start, 1)
+                if next_start > 0:
+                    prompt_candidate = prompt_candidate[next_start:]
+                else:
+                    marker_tail = prompt_candidate[-(len(prompt_start) - 1):]
+                    prompt_candidate = None
             except queue.Empty:
                 continue
-        accumulated_output = ANSI_ESCAPE.sub("", accumulated_output).replace("\r", "")
+
+        accumulated_output = ANSI_ESCAPE.sub("", "".join(output_chunks)).replace("\r", "")
         ps1_matches = CmdOutputMetadata.matches_ps1_metadata(accumulated_output)
         metadata = (
             CmdOutputMetadata.from_ps1_match(ps1_matches[-1]) if ps1_matches else None
