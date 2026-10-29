@@ -184,11 +184,15 @@ def test_linux_apply_patch_uses_posix_container_path(tmp_path):
             metadata=SimpleNamespace(exit_code=0),
         )
 
+    patch = "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new\n"
     runtime.send_command = fake_send_command
-    assert runtime.apply_patch("diff --git a/a b/a\n", verbose=False) is True
+    assert runtime.apply_patch(patch, verbose=False) is True
     assert commands[0].startswith("git apply")
     assert "/mnt_tmp/" in commands[0]
     assert "\\" not in commands[0]
+    staged_files = list(tmp_path.glob("*.diff"))
+    assert len(staged_files) == 1
+    assert staged_files[0].read_bytes() == patch.encode("utf-8")
     runtime.stopped = True
 
 

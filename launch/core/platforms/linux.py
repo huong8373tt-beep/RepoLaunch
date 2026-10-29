@@ -206,7 +206,10 @@ class LinuxRuntime(BaseRuntime):
 
         filename = f"{uuid.uuid4()}.diff"
         hostpath = os.path.join(self.mnt_host, filename)
-        with open(hostpath, "w") as f:
+        # Preserve the model patch's bytes across Windows host staging. Text mode
+        # with the default newline policy rewrites LF to CRLF on Windows, which
+        # can make otherwise valid unified-diff context fail to apply in Linux.
+        with open(hostpath, "w", encoding="utf-8", newline="\n") as f:
             f.write(patch)
         # `mnt_container` is a POSIX path even when RepoLaunch runs on Windows.
         # Using os.path.join here creates `/mnt_tmp\\name.diff`, which the Linux
