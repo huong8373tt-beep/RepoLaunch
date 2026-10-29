@@ -189,6 +189,7 @@ def test_linux_apply_patch_uses_posix_container_path(tmp_path):
     assert commands[0].startswith("git apply")
     assert "/mnt_tmp/" in commands[0]
     assert "\\" not in commands[0]
+    runtime.stopped = True
 
 
 def supported_integration_platforms() -> set[str]:
