@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -260,27 +261,56 @@ class BaseRuntime(ABC):
 
     @staticmethod
     def pull_image(image_name: str) -> bool:
+        """Ensure an image is local, retrying transient registry/daemon failures.
+
+        Docker Desktop and registries can return transient ``unexpected EOF``,
+        ``502 Bad Gateway`` or connection-reset errors while downloading a layer.
+        A single failed pull must not be treated as a missing benchmark image:
+        retry with bounded backoff, then report the terminal error with its
+        original detail.  The image is re-checked after every successful pull so
+        a partial daemon response cannot be mistaken for a usable image.
         """
-        Pull Docker image from registry.
-        
-        Args:
-            image_name (str): Name of the Docker image to pull
-            
-        Returns:
-            bool: True if successful, False if image not found
-        """
-        client = docker.from_env(timeout=3600) # pull should finish in 1 hour
+        client = docker.from_env(timeout=30)
         try:
-            # Check if image exists locally
             client.images.get(image_name)
             return True
         except docker.errors.ImageNotFound:
-            # Image doesn't exist locally, try to pull it
+            pass
+
+        try:
+            max_attempts = int(os.getenv("REPOLAUNCH_IMAGE_PULL_ATTEMPTS", "3"))
+        except ValueError as exc:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_ATTEMPTS must be a positive integer") from exc
+        if max_attempts <= 0:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_ATTEMPTS must be a positive integer")
+        try:
+            backoff = float(os.getenv("REPOLAUNCH_IMAGE_PULL_BACKOFF_SECONDS", "2"))
+        except ValueError as exc:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_BACKOFF_SECONDS must be non-negative") from exc
+        if backoff < 0:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_BACKOFF_SECONDS must be non-negative")
+
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
             try:
                 client.images.pull(image_name)
+                client.images.get(image_name)
                 return True
-            except docker.errors.ImageNotFound:
-                raise ValueError(f"Image {image_name} not found in registry")
+            except docker.errors.ImageNotFound as exc:
+                # A definitive registry miss is not transient.
+                raise ValueError(f"Image {image_name} not found in registry") from exc
+            except (docker.errors.APIError, docker.errors.DockerException) as exc:
+                last_error = exc
+                if attempt == max_attempts:
+                    break
+                delay = backoff * (2 ** (attempt - 1))
+                if delay:
+                    time.sleep(delay)
+
+        detail = str(last_error).strip() if last_error else "unknown Docker pull failure"
+        raise RuntimeError(
+            f"Docker image pull for {image_name} failed after {max_attempts} attempts: {detail}"
+        ) from last_error
 
     def cleanup(self, prune_dangling: bool = True) -> None:
         if self.stopped:
