@@ -217,8 +217,21 @@ class LinuxRuntime(BaseRuntime):
         containerpath = posixpath.join(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """
-        res = self.send_command(cmd)
-        self.send_command(f"rm {containerpath}")
+        try:
+            res = self.send_command(cmd)
+        finally:
+            # The container-side file is temporary, and the bind-mounted host
+            # file must be removed as well. Otherwise repeated evaluations leave
+            # untracked patch files in the evaluator checkout and make a later
+            # clean-source check fail closed for the wrong reason.
+            try:
+                self.send_command(f"rm {containerpath}")
+            except Exception:
+                pass
+            try:
+                os.remove(hostpath)
+            except FileNotFoundError:
+                pass
         if int(res.metadata.exit_code) == 0:
             print(f"{cmd} ---- Patch applied Successfully!", flush=True)
             return True
