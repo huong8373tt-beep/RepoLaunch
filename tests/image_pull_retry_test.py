@@ -42,6 +42,33 @@ class TestPullImageRetry:
 
         assert client.images.pull.call_count == 2
 
+    def test_retries_when_pull_returns_before_image_is_locally_visible(self):
+        client = Mock()
+        client.images.get.side_effect = [
+            docker.errors.ImageNotFound("missing before pull"),
+            docker.errors.ImageNotFound("missing after first pull"),
+            object(),
+        ]
+        client.images.pull.side_effect = [object(), object()]
+
+        with patch("launch.core.platforms.base.docker.from_env", return_value=client), \
+             patch("launch.core.platforms.base.time.sleep") as sleep, \
+             patch.dict(os.environ, {"REPOLAUNCH_IMAGE_PULL_ATTEMPTS": "3", "REPOLAUNCH_IMAGE_PULL_BACKOFF_SECONDS": "0"}, clear=False):
+            assert BaseRuntime.pull_image("example/image:latest") is True
+
+        assert client.images.pull.call_count == 2
+        assert client.images.get.call_count == 3
+        sleep.assert_not_called()
+
+    def test_uses_long_default_timeout_for_large_images(self):
+        client = Mock()
+        client.images.get.return_value = object()
+
+        with patch("launch.core.platforms.base.docker.from_env", return_value=client) as from_env:
+            assert BaseRuntime.pull_image("example/image:latest") is True
+
+        from_env.assert_called_once_with(timeout=3600)
+
     def test_does_not_retry_definitive_missing_image(self):
         client = Mock()
         client.images.get.side_effect = docker.errors.ImageNotFound("missing")

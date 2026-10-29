@@ -270,12 +270,13 @@ class BaseRuntime(ABC):
         original detail.  The image is re-checked after every successful pull so
         a partial daemon response cannot be mistaken for a usable image.
         """
-        client = docker.from_env(timeout=30)
         try:
-            client.images.get(image_name)
-            return True
-        except docker.errors.ImageNotFound:
-            pass
+            pull_timeout = int(os.getenv("REPOLAUNCH_IMAGE_PULL_TIMEOUT_SECONDS", "3600"))
+        except ValueError as exc:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_TIMEOUT_SECONDS must be a positive integer") from exc
+        if pull_timeout <= 0:
+            raise ValueError("REPOLAUNCH_IMAGE_PULL_TIMEOUT_SECONDS must be a positive integer")
+        client = docker.from_env(timeout=pull_timeout)
 
         try:
             max_attempts = int(os.getenv("REPOLAUNCH_IMAGE_PULL_ATTEMPTS", "3"))
@@ -293,13 +294,32 @@ class BaseRuntime(ABC):
         last_error: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                client.images.pull(image_name)
-                client.images.get(image_name)
+                # A transient daemon error while checking the local cache must
+                # be retried just like a transient registry pull error.
+                try:
+                    client.images.get(image_name)
+                    return True
+                except docker.errors.ImageNotFound:
+                    pass
+
+                try:
+                    client.images.pull(image_name)
+                except docker.errors.ImageNotFound as exc:
+                    # A registry-level missing image is definitive.
+                    raise ValueError(f"Image {image_name} not found in registry") from exc
+
+                try:
+                    client.images.get(image_name)
+                except docker.errors.ImageNotFound as exc:
+                    # A successful pull response followed by a missing local
+                    # image indicates an incomplete daemon operation; retry it.
+                    raise docker.errors.DockerException(
+                        f"Docker pull completed but image {image_name} was not found locally"
+                    ) from exc
                 return True
-            except docker.errors.ImageNotFound as exc:
-                # A definitive registry miss is not transient.
-                raise ValueError(f"Image {image_name} not found in registry") from exc
-            except (docker.errors.APIError, docker.errors.DockerException) as exc:
+            except ValueError:
+                raise
+            except docker.errors.DockerException as exc:
                 last_error = exc
                 if attempt == max_attempts:
                     break
