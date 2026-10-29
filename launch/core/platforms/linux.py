@@ -17,6 +17,7 @@ from launch.core.platforms.base import (
 )
 
 import os, json
+import posixpath
 from typing import Any, Optional
 import queue
 import threading
@@ -207,7 +208,10 @@ class LinuxRuntime(BaseRuntime):
         hostpath = os.path.join(self.mnt_host, filename)
         with open(hostpath, "w") as f:
             f.write(patch)
-        containerpath =  os.path.join(self.mnt_container, filename)
+        # `mnt_container` is a POSIX path even when RepoLaunch runs on Windows.
+        # Using os.path.join here creates `/mnt_tmp\\name.diff`, which the Linux
+        # shell interprets as `/mnt_tmpname.diff` and cannot open.
+        containerpath = posixpath.join(self.mnt_container, filename)
         
         cmd = f"""git apply --reject  --whitespace=nowarn  {containerpath} """
         res = self.send_command(cmd)
