@@ -11,7 +11,8 @@ class TestPullImageRetry:
     def test_retries_transient_api_error_then_verifies_image(self):
         client = Mock()
         client.images.get.side_effect = [
-            docker.errors.ImageNotFound("missing"),
+            docker.errors.ImageNotFound("missing before first pull"),
+            docker.errors.ImageNotFound("missing before retry"),
             object(),
         ]
         client.images.pull.side_effect = [
@@ -25,7 +26,7 @@ class TestPullImageRetry:
             assert BaseRuntime.pull_image("example/image:latest") is True
 
         assert client.images.pull.call_count == 2
-        assert client.images.get.call_count == 2
+        assert client.images.get.call_count == 3
         assert sleep.call_count == 1
         sleep.assert_called_once_with(2)
 
@@ -45,8 +46,9 @@ class TestPullImageRetry:
     def test_retries_when_pull_returns_before_image_is_locally_visible(self):
         client = Mock()
         client.images.get.side_effect = [
-            docker.errors.ImageNotFound("missing before pull"),
+            docker.errors.ImageNotFound("missing before first pull"),
             docker.errors.ImageNotFound("missing after first pull"),
+            docker.errors.ImageNotFound("missing before retry pull"),
             object(),
         ]
         client.images.pull.side_effect = [object(), object()]
@@ -57,8 +59,26 @@ class TestPullImageRetry:
             assert BaseRuntime.pull_image("example/image:latest") is True
 
         assert client.images.pull.call_count == 2
-        assert client.images.get.call_count == 3
+        assert client.images.get.call_count == 4
         sleep.assert_not_called()
+
+    def test_retries_transient_cache_lookup_error(self):
+        client = Mock()
+        client.images.get.side_effect = [
+            docker.errors.DockerException("502 Bad Gateway"),
+            docker.errors.ImageNotFound("missing after retry"),
+            object(),
+        ]
+        client.images.pull.return_value = object()
+
+        with patch("launch.core.platforms.base.docker.from_env", return_value=client), \
+             patch("launch.core.platforms.base.time.sleep") as sleep, \
+             patch.dict(os.environ, {"REPOLAUNCH_IMAGE_PULL_ATTEMPTS": "2", "REPOLAUNCH_IMAGE_PULL_BACKOFF_SECONDS": "2"}, clear=False):
+            assert BaseRuntime.pull_image("example/image:latest") is True
+
+        client.images.pull.assert_called_once_with("example/image:latest")
+        assert client.images.get.call_count == 3
+        sleep.assert_called_once_with(2)
 
     def test_uses_long_default_timeout_for_large_images(self):
         client = Mock()
